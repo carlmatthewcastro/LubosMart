@@ -46,6 +46,14 @@ docker compose up -d
 
 No Azure inbound rule for ports 80 or 443 is required for this tunnel setup. Keep SSH restricted to your administration IP and allow the VM outbound HTTPS traffic. Check the services with `docker compose ps` and logs with `docker compose logs -f`.
 
+For local Vite development, start the Node service with:
+
+```sh
+docker compose --profile dev up node
+```
+
+Vite will be available at `http://localhost:5173`.
+
 ## Learning Laravel
 
 Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
