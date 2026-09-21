@@ -21,6 +21,31 @@ Laravel is a web application framework with expressive, elegant syntax. We belie
 
 Laravel is accessible, powerful, and provides tools required for large, robust applications.
 
+## Docker Deployment
+
+This repository includes a PHP-FPM container, an internal Nginx server, and a Cloudflare Tunnel connector. Nginx and PHP are only reachable inside the Compose network; the tunnel provides the public HTTPS endpoint.
+
+1. Install Docker Engine and the Compose plugin on the Azure VM, then copy the repository to the VM.
+2. Create the production environment file:
+
+```sh
+cp .env.example .env
+```
+
+Set `APP_ENV=production`, `APP_DEBUG=false`, `APP_URL=https://your-domain.example`, and add a strong `CLOUDFLARED_TUNNEL_TOKEN` to `.env`. Keep this file private.
+
+3. Build the image and generate the application key:
+
+```sh
+docker compose build
+docker compose run --rm -e RUN_MIGRATIONS=false app php artisan key:generate --force
+docker compose up -d
+```
+
+4. In the Cloudflare Zero Trust dashboard, create or use a remotely managed tunnel and add a Public Hostname for your custom domain. Set its service to `http://nginx:80`. Cloudflare will create the DNS record for the hostname when the domain is managed by Cloudflare.
+
+No Azure inbound rule for ports 80 or 443 is required for this tunnel setup. Keep SSH restricted to your administration IP and allow the VM outbound HTTPS traffic. Check the services with `docker compose ps` and logs with `docker compose logs -f`.
+
 ## Learning Laravel
 
 Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.

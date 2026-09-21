@@ -173,3 +173,4 @@ Route::get('/logistics/dashboard', function () {
 Route::post('/logistics/logout', [AuthController::class, 'logout'])
     ->defaults('role', 'logistics')
     ->name('logistics.logout');
+    //create new route about logistics information
