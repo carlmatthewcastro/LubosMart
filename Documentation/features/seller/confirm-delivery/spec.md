@@ -1,0 +1,143 @@
+---
+feature: confirm-delivery
+title: Seller Delivery Confirmation
+system: LUBOSMART
+type: Feature Specification
+version: 1.1
+status: P0 delivered-event notification integration implemented; Seller UI verification remains
+role: Seller
+scope: Laravel API and Seller React dashboard
+---
+
+# Seller Delivery Confirmation
+
+## WHAT
+
+- Inform the Seller when authoritative final-mile delivery reaches `delivered`.
+- This is a read/notification feature, not Seller approval of Buyer receipt.
+- Existing Seller notification and Order-detail infrastructure is implemented.
+- Physical final-mile completion is owned by Logistics/Courier; the backend now emits the delivery-specific Seller notification after committed completion.
+- Courier submits completion intent and proof; Admin dispatch operations validate; the shared service commits delivery.
+- Seller and Buyer consume the same committed Order milestone.
+- Use the existing Seller React/JavaScript dashboard, not a new React app.
+- Reuse the notification inbox and Order detail; a separate confirmation page is unnecessary.
+- Exclude Seller status mutation, proof upload, assignment, payments, settlement, refunds, and reviews.
+- External carrier callbacks, realtime transport, and notification preferences remain separate extensions.
+
+```text
+Courier completion intent + proof
+→ owning Admin dispatch operations validate
+→ shared service commits delivered and durable notification work
+→ Seller inbox and Order timeline read the committed outcome
+```
+
+## MUST
+
+### Authority and state
+
+- Use canonical role `seller` and persisted Order status `delivered`.
+- Require authenticated active, approved Seller access and server-derived Shop ownership.
+- Scope notification and Order queries before lookup/serialization.
+- Same-email accounts in other roles confer no Seller permissions.
+- Seller cannot provide status, delivered timestamp, Courier, reviewer, or recipient overrides.
+- Seller has no mark-delivered endpoint or UI control.
+- First-mile `picked_up` and waybill scans never imply Buyer delivery.
+- Completion requires the final-mile `out_for_delivery` state and approved proof contract.
+- Logistics is the authoritative validator/recorder; Courier does not directly finalize custody.
+- The shared service commits task, Shipment, Order, immutable event, and notification work atomically.
+- `delivered_at` is server UTC finalization time, distinct from scan and notification times.
+- No delivery notification is produced for an uncommitted or rejected completion.
+- Seller read actions cannot reserve, release, fulfill stock, or change payment state.
+- COD collection and settlement must not be inferred merely from `delivered`.
+
+### Notifications and reliability
+
+- Reuse existing database/in-app notifications rather than a separate confirmation table.
+- Derive the Seller recipient from the Order's owning Shop.
+- Deduplicate delivery notification work by completion event, recipient, and notification type.
+- Persist durable work in the source transaction; deliver through the notification infrastructure after commit.
+- Queue/provider failure leaves delivery committed and retries separately.
+- Notification read state is Seller-specific and never acknowledges physical receipt.
+- Retried mark-read requests must remain harmless and never create delivery events.
+- Optional mail/push/realtime must not be required for the in-app outcome to exist.
+- Refetch recovers missed communication without replaying fulfillment.
+
+### Safe delivery projection
+
+- Proposed delivery extension: Order reference, `delivered`, `delivered_at`, event reference, and safe proof status.
+- Delivery-specific fields remain read-only projections; the Seller notification endpoint exposes the committed Order status without private proof media.
+- Use immutable Order/item/address snapshots for history, not current profile or catalog fields.
+- A delivered timestamp must come from its event, not `updated_at` or inbox read time.
+- Seller and Buyer timelines must agree on the same completion event.
+- Notification payloads omit full destination address, private proof bytes, secrets, and raw storage paths.
+- Seller sees only its own Order/item scope.
+- Proof summary access does not automatically grant media access.
+- Raw proof preview remains deferred until the owning evidence policy explicitly permits Seller access.
+- Seller may not replace, delete, or edit Courier evidence.
+- Deleting or reading a notification never removes custody or completion history.
+- Retain historical delivery records; automatic retention deletion is not introduced here.
+
+### Seller UI
+
+- Use the existing inbox and authorized Order-detail navigation.
+- Distinguish loading, empty inbox, unread/read, delivered, unavailable, forbidden, and retry states.
+- A pending Courier submission must not appear as a delivered notification.
+- Display authoritative status and localized delivery time with readable text.
+- No optimistic delivered state or manual confirmation button is allowed.
+- Keyboard navigation, screen-reader labels, and status announcements must work without color alone.
+- Preserve notification state during recoverable fetch failure; clear protected data on authorization loss.
+- Do not add maps or force an external messaging provider.
+
+### Acceptance criteria
+
+- [ ] Only the owning Seller receives and reads the delivery outcome.
+- [ ] Seller cannot mark an Order delivered or alter proof/custody.
+- [ ] Logistics-validated final-mile completion gates the notification.
+- [ ] Order, Shipment, task, event, and displayed timestamps agree.
+- [ ] Duplicate completion/retry cannot duplicate logical notifications.
+- [ ] Communication failure does not undo committed delivery.
+- [ ] Read state changes no delivery, Inventory, or payment state.
+- [ ] Safe summaries exclude raw evidence and unrelated personal information.
+- [ ] API and Seller UI verification passes before marking delivery integration implemented.
+
+## HOW
+
+### Existing routes and planned extension
+
+| Method and path | Current infrastructure |
+| --- | --- |
+| GET /api/v1/seller/notifications | Own notification list |
+| GET /api/v1/seller/notifications/{notification} | Own notification detail |
+| POST /api/v1/seller/notifications/{notification}/read | Own read state |
+| GET /api/v1/seller/orders/{order} | Own purchased-Order detail |
+
+- Reuse existing authentication, response envelopes, pagination, and errors.
+- Extend the notification serializer and Order projection only when completion is implemented.
+- Do not advertise separate timeline/proof endpoints that do not exist.
+- Reads are retryable; mark-read follows the existing idempotent behavior.
+- Preserve unauthorized/not-found distinctions without exposing another Shop's records.
+- Physical completion APIs are owned by Courier Complete Delivery and Logistics Update Status.
+- Seller consumers must never create an alternative delivery state machine.
+
+### Implementation sequence and verification
+
+- First deploy the shared schema, first-mile bridge, and verified transition service from `Documentation/schema.md`.
+- Enable final-mile completion only after evidence policy and owning endpoint contracts are implemented.
+- Add the delivered-event consumer and safe Seller payload through the existing notification infrastructure.
+- Test Shop/role isolation, forged IDs, duplicate event delivery, and after-commit failure.
+- Test read-state independence, safe proof summaries, snapshot stability, and missing-event failures.
+- Test agreement with Buyer Order Status and Courier Delivery History.
+- Test that final delivery cannot fulfill first-mile Inventory a second time.
+- Run MySQL/MySQL physical verification before enabling the event producer.
+- Run Seller UI tests for loading/read/delivered/error/accessibility states.
+- Record actual results in `Documentation/PROGRESS.md`; no physical test execution is claimed by this revision.
+
+### Deferred policy and references
+
+- Raw proof visibility/retention, external channels, callbacks, settlement, and review eligibility remain separately owned.
+- Returns, refunds, partial fulfillment, and post-pickup cancellation/failure recovery remain deferred.
+- Canonical: `Documentation/requirements.md`, `Documentation/workspace.md`, `Documentation/schema.md`, `Documentation/domains/Seller.md`.
+- Shared plan: `Documentation/features/shared/shipment-fulfillment/spec.md`.
+- Completion: `Documentation/features/courier/complete-delivery/specs.md`.
+- Evidence: `Documentation/features/courier/proof-of-delivery/specs.md` and `Documentation/references/file-upload-requirements.md`.
+- Logistics authority: `Documentation/features/logistics/update-status/specs.md`.

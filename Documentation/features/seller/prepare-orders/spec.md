@@ -1,0 +1,123 @@
+---
+feature: prepare-orders
+title: Seller Prepare Orders
+system: LUBOSMART
+type: Feature Specification
+version: 1.3
+status: Partially implemented; operational preparation deferred
+role: Seller
+scope: Seller Web Application
+---
+
+# Seller Prepare Orders
+
+## WHAT
+
+- **Purpose:** Let a Seller verify and pack purchased Shop Orders, select an eligible LuboSmart dispatch operation, request pickup, and print each resulting shared waybill.
+- **Current implementation:** Order list/detail, COD approval/rejection, saved pickup addresses, eligible Logistics selection, grouping up to 50 processing Orders, immutable shared-waybill creation/PDF reads, and notifications are implemented. The pickup transaction moves `seller_processing → ready_for_pickup`, creates the explicit tracking ID, and snapshots the Buyer postal code plus the selected dispatch operation hub's current sort-plan routing hint. The additive physical Shipment/Parcel/DeliveryTask records are deployed for downstream hub/final-mile processing; package measurements remain deferred and a Logistics schedule separately has a 30-parcel cap.
+- **Ownership boundary:** Order Approval owns `placed → seller_processing`; Prepare Orders owns packing, provider selection, readiness, and shared-waybill creation; Admin dispatch operations own scheduling/hub operations; Courier owns assigned tasks in the external mobile app.
+- **Provider rule:** Seller selects one server-validated eligible LuboSmart dispatch operation during pickup request; the committed provider and selected pickup-address snapshot are retained by the implemented pickup records.
+- **Waybill rule:** The pickup transaction creates one immutable waybill/tracking ID per Order; Seller and selected dispatch operation view the same artifact. Its thin Code 128 barcode encodes the tracking ID; the existing QR remains a compatibility/fallback identifier.
+- **Non-goals:** changing purchased snapshots or Buyer addresses, assigning Couriers, choosing hubs, scanning custody, sorting/transit/delivery, payment capture, or inventing a second Order/shipment status.
+
+```text
+Seller opens Seller-scoped processing Order
+→ verifies immutable item/SKU/quantity snapshot
+→ packs each parcel and selects Logistics
+→ requests pickup, confirms ready_for_pickup, and creates waybills
+→ Seller prints and attaches each waybill
+→ committed event/request becomes actionable to the selected dispatch operation org
+→ Logistics assigns a Courier and pickup schedule
+```
+
+## MUST
+
+### Authorization and preconditions
+
+- Require `auth:sanctum` and active Seller middleware. Every Order and package query is scoped through the Seller's one Shop; never trust submitted Seller, Shop, Buyer, Order status, provider, or package IDs.
+- Preparation requires an Order in `seller_processing`, valid COD/payment state, immutable item/address snapshots, active Shop, intact SKU reservation, and no cancellation/rejection. Stale or unauthorized actions return `404`/`409` without repairing state.
+- Opening detail or preparation does not advance status. The server, not a client `status` field, decides transitions.
+- Missing/damaged items use an approved exception/cancellation flow; Seller cannot silently alter purchased quantity or current Product data.
+
+### Purchased snapshot and package data
+
+- Display the immutable Order Item/Product/variant/SKU names, selected options, quantities, prices, and checkout shipping-address snapshot needed to pack. Never substitute current catalog values for historical facts.
+- Package weight, dimensions, and multi-package Orders remain deferred; MVP treats one Order as one parcel without using size for capacity.
+- The shared waybill contains the explicit tracking ID, thin Code 128 barcode, opaque QR, and only approved operational snapshots; it never embeds arbitrary Order JSON or secrets.
+- Pickup creation evaluates the Buyer postal snapshot against the selected dispatch operation hub's current active sort plan and stores the immutable match/miss hint. Seller does not choose the live sorting lane, and hub scan-time routing remains authoritative.
+- The reference, snapshot, and selected LuboSmart dispatch operation are immutable from the committed request; corrections require a future void-and-reissue policy.
+- Preview, download, and reprint do not change Order status. Reprints are auditable and never create another fulfillment cycle.
+
+### Readiness and first-mile handoff
+
+- The Seller action is only `seller_processing → ready_for_pickup`. It must re-read and lock the Order, validate payment/package/label/reservation requirements, and commit one status event atomically.
+- Retried or concurrent requests use a stable idempotency key and produce one logical readiness transition, one pickup request association, and one after-commit notification/event.
+- The selected LuboSmart dispatch operation already creates first-mile tasks through pickup scheduling after readiness and assigns an eligible Courier who must accept. Seller never assigns the Courier.
+- Logistics receipt is not implied by readiness. The detailed sequence is `ready_for_pickup → picked_up_from_seller → received_at_hub`; the high-level `assigned`/`picked_up` mapping remains in `Documentation/schema.md`.
+- Inventory reservation remains reserved until first-mile pickup succeeds. `picked_up_from_seller` is the approved boundary for committing reserved to fulfilled stock; Prepare Orders must not create a second stock effect.
+
+### Failure, privacy, and UX
+
+- Notification/event delivery runs after commit. A delivery failure cannot roll back readiness; it is retried/observed separately.
+- DTOs omit private evidence, unnecessary Buyer PII, payment secrets, raw storage paths, and cross-Shop identifiers.
+- Provide loading, processing, package-validation, label-generating/ready/superseded, stale/cancelled/payment-invalid, success, conflict, retry, and accessible print/download states.
+- [x] Seller can review Shop-scoped Order list/detail and immutable snapshots.
+- [x] Seller can approve/reject eligible COD Orders with locked idempotent transitions and reservation release on rejection.
+- [x] Seller can group up to 50 `seller_processing` Orders into a pending Logistics pickup request and transition them to `ready_for_pickup`.
+- [x] Persist the Seller-selected LuboSmart dispatch operation and immutable shared waybill snapshots with audited reprints.
+- [x] Persist an explicit tracking ID/thin Code 128 waybill and the pickup-time postal-code/sort-plan hint without exposing Logistics lane authority to Seller.
+- [x] Explicit Courier first-mile pickup confirmation consumes the reservation once through the existing Inventory service.
+- [x] Add shared Shipment/Parcel/DeliveryTask and Logistics-validated scan/custody records through approved additive migrations.
+- [x] Expose the shared waybill to Seller and selected dispatch operation from readiness; no Seller Courier assignment or delivery mutation.
+
+## HOW
+
+- Current Seller routes include `POST /orders/pickup-requests` and a fail-closed `/orders/{order}/waybill`; the latter becomes available after the pickup transaction creates its waybill.
+- Current implementation is `OrderController`, `SellerOrderService`, `AcceptSellerOrder`, `RejectSellerOrder`, `RequestSellerPickup`, and the Seller Orders/Approval/Pickup pages. Provider selection, pickup requests, and shared waybills are implemented; preserve them when adding the operational schema.
+- Downstream physical package/custody actions use the deployed `Shipment`, `Parcel`, `DeliveryTask`, evidence, and event records linked to the existing immutable waybill and first-mile history; Seller must not recreate or mutate those records. Keep enum-like columns as strings with PHP enum casts and use additive migrations for future extensions only.
+- Recommended records are one immutable shared waybill snapshot per Order plus separate append-only print, route, assignment, and scan events; the snapshot includes the pickup-time sort-plan hint while the scan result records the authoritative current mapping.
+- Readiness transaction: lock Seller-scoped Order → validate `seller_processing`, payment, package, label, reservation, and idempotency → write status/event/pickup association → commit → dispatch Logistics/Buyer notifications after commit.
+- Tests cover Seller isolation, snapshots, stale/cancelled/payment-invalid rejection, package limits, label privacy/versioning/reprint, readiness races/retries, selected-provider scope, after-commit failure, and the `picked_up_from_seller` Inventory handoff. Run API tests on MySQL/MySQL and Seller lint, JavaScript, and build.
+- The deployed physical Shipment/Parcel/custody extension is downstream-only for Seller. Keep Seller actions limited to readiness and waybill work; hub/final-mile transitions remain owned by Logistics/Courier APIs.
+
+### State and ownership matrix
+
+| State/event                         | Owner                                | Seller capability                                        |
+| ----------------------------------- | ------------------------------------ | -------------------------------------------------------- |
+| `placed`                            | Checkout/Order domain                | View only; Order Approval decides accept/reject          |
+| `seller_processing`                 | Seller Order Approval/Prepare Orders | Verify items, pack, select Logistics, and request pickup |
+| `ready_for_pickup`                  | Seller handoff                       | Print/reprint immutable waybill; await schedule          |
+| `picked_up_from_seller`             | First-mile Delivery Task             | No Seller transition; Inventory fulfillment boundary     |
+| `received_at_hub` / `sorted_at_hub` | Logistics                            | Read-only downstream status when exposed                 |
+| `picked_up_from_hub` / delivery     | Final-mile Delivery Task/Courier     | Read-only downstream status                              |
+
+- First-mile and final-mile assignments are independent. A Courier who completes first-mile pickup is not automatically assigned final-mile delivery.
+- `picked_up` projects first-mile Seller handoff; `assigned` projects a committed scheduled final-mile assignment. Existing Shipment/task records retain the detailed hub and final-mile states.
+
+### Waybill safety
+
+- The label contains only the minimum destination/routing information needed for handoff. Human-readable output must not expose unnecessary Buyer contact or payment data.
+- QR/barcode payloads are opaque references. Scanning resolves authorized server records rather than embedding serialized Order JSON.
+- The primary barcode is a thin, industry-standard 1D Code 128 encoding of the immutable tracking ID; QR remains available for compatibility and fallback clients.
+- Every waybill preserves its generation snapshot, selected LuboSmart dispatch operation, and timestamp; MVP does not supersede or edit the artifact.
+- A label-generation or notification failure must not partially commit `ready_for_pickup`; successful readiness is the authoritative handoff even when delivery of the follow-up notice fails.
+
+### Seller preparation contract
+
+- The preparation page may show an Order's checkout address and item snapshot, but it cannot edit either one. Any permitted pre-pickup Buyer change must arrive through the Buyer Order Modification contract and create a new authoritative snapshot before preparation.
+- Package measurements are operational facts, not Product catalog edits. Updating them must not change Product weight, SKU stock, price, or published content.
+- The Seller may print/reprint the current shared waybill. Reprinting records an event; it does not generate a new Order, reserve stock again, or notify a different LuboSmart dispatch operation.
+- Grouping several Orders in one pickup request does not merge their status histories, package identifiers, inventory references, or Buyer snapshots.
+- A pickup request status such as `pending_logistics` is not a Shipment status. It is a Seller handoff record until the shared Logistics records exist.
+
+### Required future interfaces
+
+- `GET /api/v1/seller/orders/{order}/preparation` should return immutable snapshots, package state, the immutable shared waybill, capabilities, and safe errors.
+- Pickup/waybill creation uses Seller-scoped Form Requests and UUID idempotency keys; submitted Logistics IDs are always revalidated for eligibility.
+- Seller and selected dispatch operation read endpoints expose the same waybill from readiness. DTOs must not expose Courier phone, private evidence, route secrets, or raw storage paths.
+- Existing first-mile task/confirmation records own `picked_up_from_seller`; deployed Shipment/DeliveryTask records own hub and later custody milestones without replaying existing pickup or Inventory effects.
+- A Seller-facing “waybill unavailable” response is truthful until the pickup transaction has created the waybill; it must not synthesize one from mutable browser data.
+- Any later label/waybill read must use the immutable Order/Parcel link and enforce Seller ownership before returning a document or route detail.
+- Package and label APIs must return capabilities derived from the locked current state, so the UI cannot infer readiness from stale status text.
+
+**References:** `Documentation/requirements.md`, `Documentation/workspace.md`, `Documentation/schema.md`, `Documentation/domains/Seller.md`, `Documentation/domains/Logistics.md`, `Documentation/domains/Courier.md`, Seller Order Approval, and Inventory.

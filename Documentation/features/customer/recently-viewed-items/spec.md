@@ -1,0 +1,131 @@
+---
+feature: recently-viewed-items
+title: Buyer Recently Viewed Items
+system: LUBOSMART
+type: Feature Specification
+version: 2.1
+status: Implemented (Phase 1)
+role: Buyer
+scope: Buyer web application and Laravel API
+---
+
+# Buyer Recently Viewed Items
+
+## WHAT
+
+- Passively record a Product only after a Buyer or guest successfully opens its canonical Product Detail page, then show it in most-recent-first order.
+- Support a small best-effort guest history in first-party browser storage and durable, cross-device history for an authenticated active Buyer.
+- The Phase 1 Laravel API, Product Detail recorder, homepage rail, guest storage, and protected Account history page are implemented and covered by focused API coverage.
+- Complete the existing foundation instead of introducing a new history model: `recently_viewed_products` already has UUID `id`, `user_id`, `product_id`, `last_viewed_at`, unique (`user_id`, `product_id`), and the index used for recency reads.
+- The homepage already consumes authenticated history through `HomepageService` and displays up to the configured `homepage.recently_viewed_limit` (currently 12); it must remain a presentation consumer, not its own tracker.
+
+- Recently Viewed is passive behavioural history, not Wishlist intent, Cart state, an inventory reservation, a recommendation score, analytics/pageview logging, or Seller/Admin-visible data.
+- Product Detail owns the moment of a valid visit. Search, Homepage, Browse Shop, and Product Card impressions must not create a view.
+- Product visibility stays owned by the canonical `Product::storefrontVisible()` scope. Current Product data comes from `ProductSummaryResource`, not a historical Product snapshot.
+- The MVP includes the homepage rail and protected `/account/recently-viewed` history page. It does not add recommendations, marketing messages, Seller analytics, Redis, or real-time cross-device updates.
+
+## MUST
+
+### Identity, recording, and retention
+
+- An authenticated record is always scoped to the active Buyer resolved from Sanctum; the browser never submits `user_id`.
+- `PUT /api/v1/buyer/recently-viewed/{product}` resolves the Product through `storefrontVisible()`, inserts or updates its one Buyer/Product row, and sets `last_viewed_at` from Laravel's UTC clock.
+- Reopening the same Product updates recency without creating a second logical row. Use the existing unique key with a transaction-safe upsert/update-or-create pattern.
+- A Product Detail client-only recorder runs once after the server-rendered Product is successfully resolved. It must guard against React remounts, retries, and development Strict Mode duplicate effects; backend idempotency remains mandatory.
+- Product variants do not create separate history records because the browseable identity is Product, not SKU/variant.
+- Keep no more than 50 distinct authenticated records per Buyer, pruning the oldest records after successful record or merge. Make this limit configuration-backed.
+- The existing homepage remains capped independently at 12 (or its configured value); the Account page uses cursor pagination over the retained history.
+
+### Guest history
+
+- A guest visit records only `{ productId, viewedAt }` in a versioned first-party `localStorage` key. Keep at most 12 distinct Product IDs and move a revisited Product to the front.
+- Do not store Product DTOs, images, prices, names, search terms, identifiers for an account, tokens, addresses, payment data, or any Seller-private data in browser history.
+- Read/write storage only from client code. Feature-detect access and catch security/quota/parse errors; Product Detail and normal shopping must work when storage is absent, blocked, corrupt, or cleared.
+- Guest entries are display hints, not authority. Before they become cards, submit only their bounded IDs to a public Product-summary resolver and retain returned Products in requested recency order.
+- `localStorage` is same-origin and persists across ordinary sessions but can be cleared or unavailable; private browsing may clear it when the private session ends. Treat guest history as best effort. [MDN Web Storage API](https://developer.mozilla.org/en-US/Documentation/Web/API/Web_Storage_API)
+
+### Authentication merge and logout
+
+- After a successful Buyer session restoration or login, submit the bounded guest list once to `POST /api/v1/buyer/recently-viewed/merge`; authentication success must not wait for, or fail because of, the merge.
+- Laravel validates UUID shape, maximum item count, duplicate IDs, and an optional bounded client timestamp; it resolves only storefront-visible Products and ignores invalid, missing, hidden, or malformed entries.
+- Merge deduplicates by Product ID, retains the later credible timestamp when it is not in the future, upserts Buyer-scoped rows, prunes retention, and is safe to retry.
+- On merge success, replace or clear the guest key with the canonical result. On failure, retain the local list for a later retry without claiming that it synced.
+- Logout never deletes server history and must not copy a Buyer's complete server history into guest storage.
+
+### Reading, removal, and privacy
+
+- `GET /api/v1/buyer/recently-viewed?cursor=&limit=` returns authenticated history newest first, joined to Products filtered by `storefrontVisible()`, with safe Product card data, `lastViewedAt`, and opaque cursor pagination.
+- The public resolver accepts at most 12 UUIDs and returns only `storefrontVisible()` Product cards; it must not expose another Buyer's history or accept arbitrary filters.
+- Hidden, unpublished, compliance-restricted, vacation, inactive-Shop, inactive-Seller, or deleted Products are omitted from both authenticated and guest display. Retained database rows may stay until normal pruning; do not leak their old title, price, image, or reason.
+- `DELETE /api/v1/buyer/recently-viewed/{product}` removes only the current Buyer's record and is idempotent. `DELETE /api/v1/buyer/recently-viewed` clears only that Buyer's history.
+- The Account page provides remove-one and clear-all controls with confirmation for clear-all. Guest equivalents alter only local storage and do not affect a later authenticated history.
+- Responses are private and `no-store`. Do not put Buyer history in the shared homepage cache, logs, analytics events, notifications, or Seller/Admin APIs.
+
+### Buyer experience and accessibility
+
+- Homepage renders the existing Recently Viewed rail only when it has valid Products. Guests hydrate their resolved local items in a client boundary; signed-in Buyers use the authenticated history contract without leaking it into SSR shared cache.
+- Add `/account/recently-viewed` behind existing Buyer protected routing, with cursor load-more, refresh on focus/reconnect, Product Detail links, Wishlist reuse, and no variant quick-add.
+- Use current Product prices, stock labels, image fallbacks, and availability from `ProductSummaryResource`; Cart/Wishlist retain their own validation and mutations.
+- Provide loading, empty, storage-unavailable, resolver/API-error with retry, merge-pending/failed, and stale-item-removed states without interrupting Product Detail.
+- Use a semantic section/page heading; ensure Product links, remove controls, clear confirmation, rail controls, focus changes, and status feedback are keyboard accessible and announced without relying on colour.
+
+### Acceptance criteria
+
+- [x] Opening a visible Product Detail records one recency entry; cards, searches, rails, hovers, and variants do not.
+- [x] Repeated visits update `last_viewed_at`, keep one Buyer/Product record, and put that Product first.
+- [x] An unauthenticated visitor stores only a bounded minimal local history and continues shopping when browser storage fails.
+- [x] Login/session merge validates, deduplicates, bounds, and retries safely without delaying authentication.
+- [x] Authenticated history is Buyer-scoped, persistent across normal-device refreshes, and never exposes `user_id` control to the client.
+- [x] Guest and Buyer displays omit every Product excluded by `storefrontVisible()` and use current safe Product card data.
+- [x] Homepage and Account page use the owning history API/data model; personalized data is never shared-cached.
+- [x] Remove-one and clear-all affect only the current Buyer or current guest browser as applicable.
+
+## HOW
+
+### Laravel API and persistence
+
+- The existing `RecentlyViewedProduct` model, migration, relationships, unique constraint, and `last_viewed_at` naming are the durable persistence contract. No migration change is needed for Phase 1.
+- Buyer-active routes, `RecentlyViewedController`, form requests, and `RecentlyViewedService` implement record, merge, list, remove, and clear operations.
+- Route set:
+
+  ```http
+  GET    /api/v1/buyer/recently-viewed
+  PUT    /api/v1/buyer/recently-viewed/{product}
+  POST   /api/v1/buyer/recently-viewed/merge
+  DELETE /api/v1/buyer/recently-viewed/{product}
+  DELETE /api/v1/buyer/recently-viewed
+  POST   /api/v1/buyer/products/resolve
+  ```
+
+- The resolver is public, rate-limited, validates a bounded `productIds` array, loads `shop`/`galleryMedia` eagerly, and returns `ProductSummaryResource` in request order after visibility filtering.
+- The authenticated list loads `product.shop` and `product.galleryMedia` in bounded cursor order and maps each record to `{ product, lastViewedAt }`; avoid N+1 queries and raw model serialization.
+- Reuse the service/query composition in `HomepageService` where practical, so homepage and Account history cannot disagree about scope or ordering.
+- Do not add Redis. The database is already the durable source for Buyer history and browser storage is sufficient for this bounded school-project feature.
+
+### Buyer application
+
+- The browser-only `recently-viewed-storage` utility performs parse/version validation, deduplication, capping, recording, clearing, and safe failure handling.
+- `ProductViewRecorder` beside `ProductConfigurator` records locally for guests or calls the authenticated endpoint, while `RecentlyViewedProvider` performs a best-effort guest merge after authentication is confirmed.
+- Authenticated API helpers and types under `resources/js/lib/marketplace/` use a private `no-store` request path distinct from public discovery helpers.
+- `RecentlyViewedSection` omits itself when empty, hydrates guest cards after mount, and uses `ProductRail` for accessible cards; the protected Account page provides cursor pagination, remove, clear, retry, and optimistic UI.
+
+### Validation, testing, and rollout
+
+- Laravel tests: Buyer role/status enforcement; Product visibility; upsert/recency; concurrent/retried writes; retention pruning; merge validation/order/idempotency; cursor scope; delete/clear isolation; safe DTOs; resolver bound/order; and no N+1 representative list.
+- Buyer tests: Product Detail recording once; guest storage unavailable/corrupt; stale resolver omissions; merge success/failure; Account protection/list/remove/clear; homepage guest/auth states; focus/retry; and keyboard/announced feedback.
+- `BuyerRecentlyViewedTest` covers Buyer role/status gates, visible-product recording, upsert/recency, retention, merge validation and idempotency, cursor scoping, delete/clear isolation, safe resources, resolver bounds/order, and query-count stability. The Buyer pages implement the guest/authenticated states, retries, focus/reconnect refresh, and accessible controls.
+- Run focused API tests plus Buyer lint, strict JavaScript, and production build when runtime behavior changes. This revision only corrects the specification metadata and implementation description.
+
+### Deferred enhancements and maintenance choices
+
+- The Account page currently displays a human-readable `Viewed` timestamp in addition to newest-first ordering.
+- Retention and request bounds are configuration-backed by `recently-viewed.retention_limit`, `merge_limit`, `resolver_limit`, `default_page_size`, `max_page_size`, and `client_timestamp_max_age_days`; the current guest limit is the client constant `guestRecentlyViewedLimit` (12).
+- A privacy/settings control to disable future tracking remains deferred. It would require a separate persisted preference and must not be implied by clear-all.
+- Recommendations, marketing messages, Seller analytics, notifications, Redis, and real-time cross-device updates remain outside this Phase 1 contract.
+
+### Sources
+
+- Existing implementation: `app/Http/Controllers/Buyer/RecentlyViewedController.php`, `app/Http/Requests/Buyer/RecentlyViewedListRequest.php`, `app/Http/Requests/Buyer/RecentlyViewedMergeRequest.php`, `app/Http/Resources/Buyer/RecentlyViewedItemResource.php`, `app/Services/Buyer/RecentlyViewedService.php`, `app/Models/RecentlyViewedProduct.php`, `app/tests/Feature/Buyer/BuyerRecentlyViewedTest.php`, `resources/js/components/recently-viewed/`, `resources/js/lib/marketplace/recently-viewed-storage.ts`, and `Documentation/schema.md` section 9.8.
+- [MDN Web Storage API](https://developer.mozilla.org/en-US/Documentation/Web/API/Web_Storage_API) documents origin-scoped browser storage, persistence, and private-session behaviour.
+- [MDN storage availability guidance](https://developer.mozilla.org/en-US/Documentation/Web/API/Web_Storage_API/Using_the_Web_Storage_API) supports handling blocked and quota-limited storage safely.
+- [Laravel Eloquent](https://laravel.com/Documentation/12.x/eloquent) documents model persistence patterns used by the Buyer-scoped upsert service.

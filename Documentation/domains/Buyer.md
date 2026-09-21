@@ -1,0 +1,224 @@
+---
+model: Buyer
+type: Domain Context
+purpose: Shared Buyer/Buyer workflow and implementation context
+version: 1.3
+status: Revised — aligned with the approved Buyer order/Logistics flow and implemented storefront foundation
+---
+
+# Buyer Model Context
+
+## Overview
+
+Buyer is LuboSmart's marketplace buyer role. **Buyer** is the canonical API and authorization term (`buyer`); Buyer is the product and documentation term used for the person purchasing from a Shop. The Buyer experience lives in the separate React storefront at `resources/js/webapp`; Laravel and MySQL remain authoritative for identity, catalog visibility, cart, checkout, orders, and personal data.
+
+Guests may browse public storefront content. An active, approved Buyer is required for account data, Cart, Wishlist, Recently Viewed synchronization, checkout, order history, and other protected actions. The Buyer app never decides ownership, price, stock, eligibility, or fulfillment status from client-provided values.
+
+LuboSmart uses first-party LuboSmart dispatch operations and their sole operational hubs for fulfillment. Buyer checkout remains provider-neutral; the Seller selects one eligible LuboSmart dispatch operation when requesting pickup, and that committed selection is retained downstream. Buyer tracking consumes safe read-only projections of shared Order and deployed Shipment/Delivery Task contracts.
+
+## Account and access boundary
+
+- Buyer registration, approval, authentication, and password recovery follow `Documentation/references/user-registration-requirements.md` and the Buyer Auth feature contracts.
+- A Buyer registers and waits for the required Admin approval before sign-in and protected access. Pending, rejected, suspended, deactivated, unauthenticated, or non-Buyer identities receive no Buyer data.
+- The API derives the authenticated Buyer from Sanctum session/token context and normalized `email + role`. Clients cannot submit a replacement `user_id`, role, approval state, age, or account status.
+- Age is calculated server-side from the stored `birth_date`; a client-supplied age is never authoritative.
+- Buyer account/profile data is allow-listed and Buyer-scoped. Profile photos use the configured private disk/Azure Blob path and the shared upload policy; raw object paths and credentials are never returned.
+- Guests can be sent to sign-in with a same-origin return path for protected pages, then must intentionally retry the protected action after authentication.
+
+The Buyer storefront uses the existing stateful Sanctum cookie flow. Any future external/mobile Buyer client must use the documented bearer-token contract and the same role/status gates; no UI or API may bypass those gates.
+
+## Public storefront and visibility contract
+
+The public discovery chain is:
+
+```text
+public request
+→ active approved Seller
+→ active Shop not on vacation
+→ published active Product
+→ approved Product media and safe Product-card/detail projection
+```
+
+- Guests and Buyers may browse the public homepage, search, Product Detail, Shop directory, and Shop storefront.
+- `Product::storefrontVisible()` is the shared visibility boundary. Draft, archived, deleted, hidden, compliance-restricted, inactive-Seller, inactive-Shop, suspended-Shop, and vacation-Shop listings are excluded from public responses.
+- Storefront visibility is distinct from purchasability: Cart and Checkout recheck current Variant, SKU, stock, Shop, price, voucher, and address eligibility at the point of mutation.
+- Public DTOs contain only safe catalog, Shop, media, and pricing presentation fields. They do not expose Seller registration evidence, Admin data, Buyer data, private notes, payment secrets, or raw storage paths.
+- A public or ISR/shared cache must never contain Buyer-specific Wishlist, Recently Viewed, address, Cart, order, or account data.
+
+## Canonical order and fulfillment contract
+
+Persisted and API status values use lowercase `snake_case`. PHP enum case names and UI labels are separate from database values. The current high-level `OrderStatus` contract is:
+
+```text
+pending_payment
+→ placed
+→ seller_processing
+→ ready_for_pickup
+→ picked_up
+→ in_transit
+→ out_for_delivery
+→ delivered
+```
+
+Exceptional values are `cancelled`, `rejected`, `delivery_failed`, `return_requested`, and `returned`.
+
+COD placement currently creates an Order at `placed` with `payment_status = pending`; `pending_payment` remains available for a future online-payment flow. `picked_up` means first-mile possession was explicitly confirmed. `assigned` means Logistics committed a delivery schedule and final-mile Courier offer; the Buyer may then see that Courier's name and contact number. A Buyer can read these states but cannot advance or rewrite them.
+
+The physical flow is:
+
+```text
+Buyer places Order (`placed`)
+→ Seller processes and confirms `ready_for_pickup`
+→ Seller selects Logistics; the pickup transaction freezes a shared waybill with the immutable Order/Parcel reference and Buyer destination snapshot
+→ selected LuboSmart dispatch operation creates and offers the first-mile task to an eligible Courier
+→ first-mile Courier accepts and confirms pickup from Seller (`picked_up_from_seller`; Order `picked_up`)
+→ Admin dispatch operations receive the parcel at `received_at_hub` using the same shared tracking ID/reference
+→ Admin dispatch operations sort, transfers, and dispatches at its sole hub
+→ Admin dispatch operations schedule up to 15 sorted parcels with one final-mile Courier
+→ final-mile Courier picks up from hub and delivers to Buyer
+→ Order becomes `delivered`
+→ Buyer may review an eligible delivered Product
+```
+
+Detailed physical milestones belong to Shipment/Delivery Task records, not to invented `orders.status` values:
+
+```text
+seller_pickup_assigned
+→ seller_pickup_accepted
+→ picked_up_from_seller
+→ received_at_hub
+→ sorted_at_hub
+→ in_transfer
+→ dispatched_from_hub
+→ delivery_assigned
+→ delivery_accepted
+→ picked_up_from_hub
+→ in_transit
+→ out_for_delivery
+→ delivered
+```
+
+First-mile and final-mile assignments are independent. Completing Seller pickup does not automatically grant final-mile assignment; Admin dispatch operations may assign the same or a different eligible Courier. The Buyer receives only safe, chronological events and authorized tracking projections.
+
+## Buyer capabilities
+
+### 1. Buyer Authentication and Account
+
+- **Purpose:** Register, wait for approval, sign in, recover credentials, and maintain the Buyer profile.
+- **Current state:** Buyer Auth, approval-aware sessions, password recovery, account profile/password management, and private Buyer profile photos are implemented.
+- **Boundary:** Account settings cannot change role, approval/status, another user's record, registration evidence, order snapshots, or authoritative catalog values.
+
+### 2. Homepage, Search, and Discovery
+
+- **Purpose:** Help guests and Buyers find public Products, Shops, categories, campaigns, and deals.
+- **Current state:** Public homepage aggregation, bounded Product/Shop/category search, safe Product cards, responsive storefront sections, and authenticated context are implemented.
+- **Boundary:** Search and homepage are read projections. They do not create Recently Viewed entries, reserve stock, add Wishlist rows, or promise a price/availability that Checkout has not revalidated.
+
+### 3. Product Detail
+
+- **Purpose:** Show one currently visible Product, its Shop, media, specifications, Markdown description, valid option combinations, price, and stock state.
+- **Current state:** UUID Product Detail routing, ordered gallery/variant media, safe GFM Markdown rendering, variant selection, quantity limits, Add to Cart, and Buy Now intents are implemented.
+- **Boundary:** Product description images are Product-owned approved assets; the Buyer renderer uses safe Markdown/GFM and does not execute raw HTML or arbitrary external image paths. Product Detail does not itself place an Order.
+
+### 4. Browse Shops
+
+- **Purpose:** Let guests and Buyers open the public Shop directory and a Shop by slug, then filter that Shop's visible Products by the canonical Product Category taxonomy.
+- **Current state:** Paginated directory, Shop-scoped category filtering, deterministic Product pagination, safe Shop summaries, metadata, and accessible loading/empty/not-found/retry states are implemented.
+- **Boundary:** A Shop page can return only Products belonging to the resolved active Shop and never bypasses `storefrontVisible()`.
+
+### 5. Cart
+
+- **Purpose:** Hold Buyer-selected Product/SKU configurations before checkout.
+- **Current state:** One UUID Cart per active Buyer, SKU/Variant-level line identity, authenticated add/update/delete, current price/availability projections, selected-line checkout, and unavailable-intent preservation are implemented.
+- **Boundary:** Cart contents are not an inventory reservation and do not snapshot authoritative price, stock, shipping, or totals. Every mutation revalidates Product, Variant, Shop, and quantity ownership.
+
+### 6. Checkout and Order Creation
+
+- **Purpose:** Convert Buy Now or selected Cart intent into one or more valid Shop Orders.
+- **Current state:** Server-authoritative quote/place APIs and storefront flow are implemented for COD. Lines are grouped by Shop; one Shop group creates one Order, while a multi-Shop submission is one atomic checkout batch with separate Orders.
+- **Rules:** The Buyer selects a Buyer-owned address. The API rechecks catalog/inventory/vouchers and creates immutable item, financial, payment, and delivery-address snapshots. Placement uses a Buyer-scoped idempotency key and does not accept client prices, totals, status, ownership, payment secrets, or a Logistics provider; Seller pickup owns provider selection.
+- **Boundary:** Payment gateways, returns/refunds, Seller preparation, Shipment/Delivery Task persistence, and Logistics/Courier assignment are separate features. No Buyer action may create or mutate a shipment/task record before the shared operational schema is approved.
+
+### 7. Order History and Status Monitoring
+
+- **Purpose:** Let an authenticated Buyer view their own purchase history, status tabs, Order details, immutable snapshots, and safe tracking timeline.
+- **Current state:** `/orders` and `/orders/{order}` APIs/pages are implemented with **All** as the default list, server-side status-group filters, pagination, chronological status events, private no-store responses, and ownership-safe not-found behavior.
+- **Rules:** The status mapper is server-owned. Tracking is read-only; a Buyer cannot cancel by changing a status or submit a Courier/Logistics update. Detailed hub/task milestones and any active map data are consumed only when the owning Logistics contracts provide them.
+- **Boundary:** Buyer views omit private Courier GPS history, employee IDs, full hub addresses, internal notes, payment credentials, and Admin/Seller operational data. Map/provider failure leaves the timeline intact and never fabricates an ETA or location.
+
+### 8. Address Book and Delivery Location
+
+- **Purpose:** Save reusable shipping/billing addresses and select one during checkout.
+- **Current state:** Buyer-scoped address list/create/edit/delete/default/checkout-selection flows are implemented.
+- **Location flow:** Philippine Region → Province → City/Municipality → Barangay options come from the bundled `@lubosmart/psgc-address-data` package. The Buyer may use a Philippines-scoped Geoapify forward-geocoding request after selecting **Pin location**, then refine a local draggable pin on Leaflet-rendered Geoapify tiles; manual entry remains available when a provider or map is unavailable. Mapbox is not used.
+- **Rules:** Coordinates are optional mutable Address Book data. Manually reviewed PSGC/address fields remain authoritative; coordinates are the optional result of the confirmed pin. Checkout validates the selected Buyer-owned address and copies normalized fields/coordinates into an immutable `order_addresses` snapshot. Editing or deleting the saved address cannot rewrite a placed Order.
+- **Boundary:** The Buyer address flow does not choose a Logistics hub, calculate courier routes, or expose another Buyer's address.
+
+### 9. Order Modification and Cancellation
+
+- **Purpose:** Allow limited correction or cancellation of a newly placed Order.
+- **Contract:** Eligibility is server-calculated and must be rechecked under the shared Order transition rules. The current MVP boundary allows changes only while the Order remains `placed`, before Seller processing begins; `seller_processing`, `ready_for_pickup`, and every downstream state close the normal modification window.
+- **Boundary:** This feature does not mutate immutable item/price/payment history or alter an Order's Address Book source record. A later approved policy may add specific actions without granting generic Buyer status control.
+
+### 10. Wishlist
+
+- **Purpose:** Save or remove currently buyer-visible Products for later.
+- **Current state:** Phase 1 Buyer-scoped save/remove/list/status APIs and Product Card/Detail controls are implemented, with a protected `/account/wishlist` page and Cart handoff.
+- **Rules:** Wishlist is not Cart, reservation, price guarantee, public list, or Seller analytics. Hidden or restricted Products are omitted and Cart revalidates current state. Guest clicks redirect to sign-in and are not silently persisted.
+- **Deferred:** Restock/price-drop alerts require a separate Buyer notification inbox, preferences, durable deduplication, and delivery contract; no alert is claimed yet.
+
+### 11. Recently Viewed Items
+
+- **Purpose:** Help a Buyer or guest find Products whose canonical Product Detail page they opened.
+- **Current state:** Product-detail-only recording, bounded guest local history, non-blocking login/session merge, Buyer-scoped persistent history, visibility filtering, homepage rail, and protected Account history page are implemented.
+- **Rules:** A Product is recorded once per valid detail visit; cards, searches, rails, hovers, and variant changes do not create entries. Guest storage contains only bounded Product IDs/timestamps and remains best effort when browser storage fails. Authenticated history is private and never shared-cached.
+
+### 12. Reviews and Ratings
+
+- **Purpose:** Let a Buyer rate and describe a purchased Product after delivery, optionally with approved media.
+- **Status:** The MVP Laravel persistence/API and Buyer storefront Order Detail/Product Detail flows are implemented. Moderation, Buyer editing/deletion, and Seller response management remain separate deferred work.
+- **Rules:** Only the purchasing Buyer may review an eligible delivered line; review media follows `Documentation/references/file-upload-requirements.md`; public reads require a visible Product; Seller replies and moderation remain separate concerns.
+
+### 13. Product Q&A and Chat/Messaging
+
+- **Purpose:** Ask public Product questions and communicate with an authorized Seller or support participant.
+- **Status:** Product Q&A Phase 1 is implemented in the Buyer storefront and Laravel API. Chat/Messaging remains deferred.
+- **Boundary:** Future threads, questions, notifications, and unread counts must be Buyer/Shop or relationship scoped. They must not expose registration evidence, private addresses, payment secrets, or unrelated users, and must not duplicate the order-status or Admin notification contracts.
+
+## Data, privacy, and consistency invariants
+
+- Every protected Buyer query derives ownership from the authenticated Buyer and applies the correct role/status middleware. Forged IDs, cross-role same-email records, and another Buyer's UUIDs return an ownership-safe denial.
+- `storefrontVisible()` is applied to every public Product projection and again at Wishlist, Recently Viewed, Cart, and Checkout boundaries. Public cache entries contain no Buyer-specific state.
+- Cart and Checkout use server prices, voucher eligibility, address validation, and inventory locks. Order placement is atomic and idempotent: failed validation creates no partial Orders, reservations, voucher redemption, or notifications.
+- Checkout reserves the requested SKU quantity at placement. An accepted cancellation or rejection before `picked_up_from_seller` releases only that Order's reservation once and transactionally; first-mile pickup commits the reservation once. Post-pickup cancellation, delivery failure, returns, refunds, and partial fulfillment remain deferred.
+- Placed Order items, money, payment method/status, delivery address, and voucher data are immutable snapshots. Mutable Address Book, Product, Shop, or Seller changes cannot rewrite historical Orders.
+- A future fulfillment record must retain the server-validated Seller-selected LuboSmart dispatch operation per pickup request/Order; it must not silently substitute another provider.
+- One shared waybill freezes at `ready_for_pickup`; its identifier, snapshot, LuboSmart dispatch operation, and Order/Parcel link are immutable, with routing/assignment/scan changes represented by append-only events.
+- Order status transitions and status events are owned by the relevant Seller, Logistics, or Courier contract and are validated, transactional, idempotent, and append-only. Notification or map delivery failure cannot roll back a committed business decision.
+- Buyer-specific APIs and pages use private/no-store semantics where required. Logs and DTOs omit tokens, password hashes, full addresses, raw GPS history, private media paths, and payment credentials.
+- File/image work follows `Documentation/references/file-upload-requirements.md`: JPEG/JPG, PNG, or WebP, strictly under 10 MiB, with server-side signature, MIME, decode, ownership, and private-delivery checks. Profile-photo storage is configured-disk/Azure Blob; Product description/gallery assets are separate Product-owned records.
+
+## Current and deferred data boundary
+
+Implemented Buyer foundation:
+
+- Buyer registration/authentication, Admin approval gating, session restoration/logout, password recovery, account profile/password management, and private profile photos.
+- Public homepage/search, Product Detail, Browse Shop, shared visibility filtering, catalog media/Markdown projections, Cart, COD checkout, vouchers, inventory reservation, Shop Orders, immutable snapshots, and Buyer order-status monitoring.
+- Buyer Address Book with bundled PSGC options, Geoapify pin assistance, Leaflet/Geoapify map rendering, manual fallback, order-address snapshots, Wishlist Phase 1, and Recently Viewed history.
+
+Deferred or dependent Buyer operations:
+
+- Seller preparation/provider selection, shared waybills, first-mile scheduling/acceptance/confirmation, Courier route manifests, and Seller Q&A queue/answer UI are implemented downstream foundations. The additive shared Shipment/Parcel/DeliveryTask records now support Logistics hub processing, independent final-mile assignment/delivery, QR evidence, and the Buyer's high-level delivered projection. Buyer live route/ETA display, photo/signature proof presentation, payment gateways, returns/refunds, Chat/Messaging, Buyer notification preferences/inbox, and Wishlist alerts remain deferred. Buyer cancellation/address correction, Product Q&A public read/ask with notifications, and verified Product Reviews are implemented.
+
+Future Buyer-facing shipment fields must be provider-neutral, safe, and read-only. Future enum-like database fields remain string-backed and API-cast to PHP enums; fulfillment additions must preserve the shared high-level `OrderStatus` contract and explicit Shipment/Delivery Task milestones.
+
+## Shared contracts
+
+- `Documentation/requirements.md` — Buyer responsibilities, approval boundary, address/order requirements, and first-party fulfillment flow.
+- `Documentation/workspace.md` — Buyer journeys, canonical Order status meanings, and the sole-hub Logistics flow.
+- `Documentation/schema.md` — Users, addresses, catalog, Cart, checkout, Order snapshots/status history, deployed P0 fulfillment records, and deferred extensions.
+- `Documentation/references/user-registration-requirements.md` — Buyer registration and approval requirements.
+- `Documentation/references/file-upload-requirements.md` — Profile, Product, and future Buyer media upload rules.
+- `Documentation/features/buyer/*/spec.md` — Feature-specific Buyer implementation contracts.
+
+**Current/future boundary:** `ConfirmFirstMilePickup` remains the compatibility writer for the accepted Courier's Seller handoff and Inventory fulfillment, then idempotently bridges shared physical records without replaying stock. Hub and final-mile state changes use the Logistics-authoritative `FulfillmentTransitionService`; Buyer-facing route/location telemetry, media proof presentation, returns, and exceptional recovery remain future extensions.
